@@ -68,6 +68,8 @@ namespace PDFSorterCS
         private const int EPS = 1;
         private SizeRange srOther;
         private SizeRange srOversize;
+        private static MainWindow mainWindow;
+
 
         private class SizeRange: IComparable
         {
@@ -101,7 +103,7 @@ namespace PDFSorterCS
 
             public bool IsSmallerSizeFit(PDFDocument p_obj)
             {
-                return (p_obj.MinSize <= size + EPS);
+                return (p_obj.MinSize <= size + EPS && isRoll);
             }
 
             public int CompareTo(object other)
@@ -192,23 +194,30 @@ namespace PDFSorterCS
 
         public void ProcessDirs(string p_sSubDirs = "")
         {
-            foreach (var f in Directory.GetFiles(System.IO.Path.Join(SourcePath, p_sSubDirs)))
+            try
             {
-                try
+                foreach (var f in Directory.GetFiles(System.IO.Path.Join(SourcePath, p_sSubDirs)))
                 {
-                    var p = new PDFDocument(p_sSubDirs, System.IO.Path.GetFileName(f));
-                    Add(p);
+                    try
+                    {
+                        var p = new PDFDocument(p_sSubDirs, System.IO.Path.GetFileName(f));
+                        Add(p);
+                    }
+                    catch
+                    {
+                        var p = new GenericDocument(p_sSubDirs, System.IO.Path.GetFileName(f));
+                        Add(p);
+                    }
                 }
-                catch 
+
+                foreach (var f in Directory.GetDirectories(System.IO.Path.Join(SourcePath, p_sSubDirs)))
                 {
-                    var p = new GenericDocument(p_sSubDirs, System.IO.Path.GetFileName(f));
-                    Add(p);
+                    ProcessDirs(System.IO.Path.Join(p_sSubDirs, System.IO.Path.GetFileName(f)));
                 }
             }
-
-            foreach (var f in Directory.GetDirectories(System.IO.Path.Join(SourcePath, p_sSubDirs)))
+            catch
             {
-                ProcessDirs(System.IO.Path.Join(p_sSubDirs, System.IO.Path.GetFileName(f)));
+                throw new Exception("Source folder doesn't exist.");
             }
         }
 
@@ -244,12 +253,14 @@ namespace PDFSorterCS
 
         private static readonly Lazy<DictContainer> dictContainer = new Lazy<DictContainer>(() => new DictContainer());
 
-        public static DictContainer GetInstance()
+        public static DictContainer GetInstance(MainWindow p_mainWindow = null)
         {
+            if (p_mainWindow != null)
+                mainWindow = p_mainWindow;
             return dictContainer.Value;
         }
 
-        public string ToString()
+        override public string ToString()
         {
             string sResult = "";
 
@@ -271,7 +282,8 @@ namespace PDFSorterCS
         {
             InitializeComponent();
 
-            RollSizes.Text = (string)Registry.GetValue(userRoot + "\\" + subkey, "RollSizes", "594 841");
+            var sRollSizes = (string)Registry.GetValue(userRoot + "\\" + subkey, "RollSizes", "594 841");
+            RollSizes.Text = sRollSizes == null ? "594 841" : sRollSizes;
             SourcePath.Text = (string)Registry.GetValue(userRoot + "\\" + subkey, "SourcePath", "");
             TargetPath.Text = (string)Registry.GetValue(userRoot + "\\" + subkey, "TargetPath", "");
 
@@ -284,25 +296,31 @@ namespace PDFSorterCS
             TargetPath.PreviewDrop += new System.Windows.DragEventHandler(TextBox_PreviewDrop);
         }
 
-
         #region Event handlers
         private void ButtonStart_Click(object sender, RoutedEventArgs e)
         {
-            var dictContainer = DictContainer.GetInstance();
+            var dictContainer = DictContainer.GetInstance(this);
+            dictContainer.SetSizes(RollSizes.Text);
 
             if (!CheckTargetDirectory())
                 return;
 
-            dictContainer.ProcessDirs();
-            dictContainer.CopyFiles();
+            try
+            {
+                dictContainer.ProcessDirs();
+                dictContainer.CopyFiles();
 
-            SetOutput("Successfully done.");
+                SetOutput("Successfully done.");
+            }
+            catch (Exception ex)
+            {
+                SetOutput(ex.Message);
+            }
         }
 
         private void ButtonHelp_Click(object sender, RoutedEventArgs e)
         {
             Process.Start(new ProcessStartInfo { FileName = "https://limadesignkft.sharepoint.com/sites/bim/BIM%20developer%20wiki/PDFSorter.aspx", UseShellExecute = true });
-
         }
 
         private void Rollsizes_TextChanged(object sender, TextChangedEventArgs e)
@@ -374,12 +392,12 @@ namespace PDFSorterCS
             Registry.SetValue(userRoot + "\\" + subkey, "TargetPath", TargetPath.Text);
         }
 
-        private async Task<int> SetOutput(string p_info)
+        public async Task<int> SetOutput(string p_info, int iMilliseconds = 5000)
         {
             try
             {
                 OutputInfo.Text = p_info;
-                await Task.Delay(5000);
+                await Task.Delay(iMilliseconds);
                 OutputInfo.Text = "";
             }
             catch { }
@@ -389,15 +407,19 @@ namespace PDFSorterCS
 
         private bool CheckTargetDirectory()
         {
-            IEnumerable<string> items = Directory.EnumerateFileSystemEntries(TargetPath.Text);
-            using (IEnumerator<string> en = items.GetEnumerator())
+            try
             {
-                if (en.MoveNext())
+                IEnumerable<string> items = Directory.EnumerateFileSystemEntries(TargetPath.Text);
+                using (IEnumerator<string> en = items.GetEnumerator())
                 {
-                    SetOutput("Target path is not empty, please empty it!");
-                    return false;
+                    if (en.MoveNext())
+                    {
+                        SetOutput("Target path is not empty, please empty it!");
+                        return false;
+                    }
                 }
             }
+            catch { }
 
             return true;
         }
