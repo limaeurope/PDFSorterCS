@@ -6,7 +6,12 @@
 	<UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <UseWPF>true</UseWPF>
+    <ApplicationIcon>lima_Fekete.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="lima_Fekete.ico" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="iTextSharp" Version="5.5.13.3" />

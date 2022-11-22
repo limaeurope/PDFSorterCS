@@ -14,11 +14,13 @@ using System.Windows.Media.Imaging;
 using System.Windows.Navigation;
 using System.Windows.Shapes;
 using iTextSharp.text.pdf;
-using iTextSharp.text.pdf.parser;
-using System.IO;
-using System.Collections.Specialized;
 using Microsoft.Win32;
 using System.Windows.Forms;
+using DragDropEffects = System.Windows.DragDropEffects;
+using DataFormats = System.Windows.DataFormats;
+using DragEventArgs = System.Windows.DragEventArgs;
+using TextBox = System.Windows.Controls.TextBox;
+using System.Diagnostics;
 
 namespace PDFSorterCS
 {
@@ -37,6 +39,7 @@ namespace PDFSorterCS
             Name = p_name;
         }
     }
+
 
     public class PDFDocument: GenericDocument
     {
@@ -60,11 +63,11 @@ namespace PDFSorterCS
     public class DictContainer
     {
         private const string OVERSIZE = "Oversize";
-        private const string OTHER = "Other Document";
+        private const string OTHER = "Other Documents";
+        private const string AREAS = "Areas.txt";
         private const int EPS = 1;
         private SizeRange srOther;
         private SizeRange srOversize;
-
 
         private class SizeRange: IComparable
         {
@@ -72,6 +75,9 @@ namespace PDFSorterCS
             public double secondSize;
             public List<GenericDocument> docS = new List<GenericDocument>();
             public string sName;
+            public double dTotalArea;
+            public int iTotalPages;
+            private bool isRoll;
 
             public SizeRange(string p_sName, double p_size, double p_secondSize = -1)
             {
@@ -79,9 +85,12 @@ namespace PDFSorterCS
 
                 sName = p_sName;
                 secondSize = p_secondSize;
+                dTotalArea = 0;
+                iTotalPages = 0;
+                isRoll = p_secondSize > 0 ? false : true;
             }
 
-            public bool isSizeFit(PDFDocument p_obj)
+            public bool IsSizeFit(PDFDocument p_obj)
             {
                 if (sName == OVERSIZE) return true;
                 if (secondSize < 0)
@@ -90,7 +99,7 @@ namespace PDFSorterCS
                     return (p_obj.MaxSize <= size + EPS && p_obj.MinSize <= secondSize + EPS);
             }
 
-            public bool isSmallerSizeFit(PDFDocument p_obj)
+            public bool IsSmallerSizeFit(PDFDocument p_obj)
             {
                 return (p_obj.MinSize <= size + EPS);
             }
@@ -103,6 +112,23 @@ namespace PDFSorterCS
                 if ((other as SizeRange).sName == OTHER) return -1;
 
                 return (int)size - (int)(other as SizeRange).size;
+            }
+
+            public void Add(PDFDocument p_doc)
+            {
+                if (isRoll)
+                    dTotalArea += p_doc.Width * p_doc.Height;
+                else
+                    iTotalPages++;
+                docS.Add(p_doc);
+            }
+
+            public override string ToString()
+            {
+                if (isRoll)
+                    return sName + " mm: " + Math.Round(dTotalArea / 1000000, 2).ToString() + " m2";
+                else
+                    return sName + ": " + iTotalPages.ToString();
             }
         }
 
@@ -143,17 +169,17 @@ namespace PDFSorterCS
         public void Add(PDFDocument p_obj)
         {
             foreach (var s in dStandardSizesGrowing)
-                if (s.isSizeFit(p_obj))
+                if (s.IsSizeFit(p_obj))
                 {
                     if (s == srOversize)
                         foreach (var s2 in dStandardSizesGrowing)
-                            if (s2.isSmallerSizeFit(p_obj))
+                            if (s2.IsSmallerSizeFit(p_obj))
                             {
-                                s2.docS.Add(p_obj);
+                                s2.Add(p_obj);
                                 return;
                             }
 
-                    s.docS.Add(p_obj);
+                    s.Add(p_obj);
                     return;
                 }
         }
@@ -212,6 +238,8 @@ namespace PDFSorterCS
 
                 }
             }
+
+            File.WriteAllText(System.IO.Path.Join(TargetPath, AREAS), ToString());
         }
 
         private static readonly Lazy<DictContainer> dictContainer = new Lazy<DictContainer>(() => new DictContainer());
@@ -220,25 +248,60 @@ namespace PDFSorterCS
         {
             return dictContainer.Value;
         }
+
+        public string ToString()
+        {
+            string sResult = "";
+
+            foreach (var s in dStandardSizesGrowing)
+                if (s.dTotalArea > EPS ||s.iTotalPages > 0)
+                    sResult += s.ToString() + "\n";
+
+            return sResult;
+        }
     }
 
 
     public partial class MainWindow : Window
     {
+        const string userRoot = "HKEY_CURRENT_USER";
+        const string subkey = "SOFTWARE\\LIMA\\PDFSorterCS";
 
         public MainWindow()
         {
             InitializeComponent();
-            RollSizes.Text = "1828 1220 1067 610 420 594 841 914";
+
+            RollSizes.Text = (string)Registry.GetValue(userRoot + "\\" + subkey, "RollSizes", "594 841");
+            SourcePath.Text = (string)Registry.GetValue(userRoot + "\\" + subkey, "SourcePath", "");
+            TargetPath.Text = (string)Registry.GetValue(userRoot + "\\" + subkey, "TargetPath", "");
+
+            SourcePath.PreviewDragEnter += new System.Windows.DragEventHandler(TextBox_PreviewDragEnter);
+            SourcePath.PreviewDragOver += new System.Windows.DragEventHandler(TextBox_PreviewDragEnter);
+            SourcePath.PreviewDrop += new System.Windows.DragEventHandler(TextBox_PreviewDrop);
+
+            TargetPath.PreviewDragEnter += new System.Windows.DragEventHandler(TextBox_PreviewDragEnter);
+            TargetPath.PreviewDragOver += new System.Windows.DragEventHandler(TextBox_PreviewDragEnter);
+            TargetPath.PreviewDrop += new System.Windows.DragEventHandler(TextBox_PreviewDrop);
         }
 
-        private void Button_Click(object sender, RoutedEventArgs e)
+
+        #region Event handlers
+        private void ButtonStart_Click(object sender, RoutedEventArgs e)
         {
             var dictContainer = DictContainer.GetInstance();
 
+            if (!CheckTargetDirectory())
+                return;
 
             dictContainer.ProcessDirs();
             dictContainer.CopyFiles();
+
+            SetOutput("Successfully done.");
+        }
+
+        private void ButtonHelp_Click(object sender, RoutedEventArgs e)
+        {
+            Process.Start(new ProcessStartInfo { FileName = "https://limadesignkft.sharepoint.com/sites/bim/BIM%20developer%20wiki/PDFSorter.aspx", UseShellExecute = true });
 
         }
 
@@ -246,6 +309,7 @@ namespace PDFSorterCS
         {
             DictContainer.GetInstance().SetSizes(RollSizes.Text);
         }
+
 
         private void SourcePath_TextChanged(object sender, TextChangedEventArgs e)
         {
@@ -255,6 +319,8 @@ namespace PDFSorterCS
         private void TargetPath_TextChanged(object sender, TextChangedEventArgs e)
         {
             DictContainer.GetInstance().TargetPath = TargetPath.Text;
+            CheckTargetDirectory();
+
         }
 
         private void ButtonSourcePath_Click(object sender, RoutedEventArgs e)
@@ -270,11 +336,6 @@ namespace PDFSorterCS
             }
         }
 
-        private void ButtonSourcePath_Drop(object sender, System.Windows.DragEventArgs e)
-        {
-            SourcePath.Text = e.ToString();
-        }
-
         private void ButtonTargetPath_Click(object sender, RoutedEventArgs e)
         {
             using (var fbd = new FolderBrowserDialog())
@@ -288,6 +349,57 @@ namespace PDFSorterCS
             }
         }
 
+        private void TextBox_PreviewDragEnter(object sender, DragEventArgs e)
+        {
+            e.Handled = true;
+        }
 
+        private void TextBox_PreviewDrop(object sender, DragEventArgs e)
+        {
+            if (e.Data.GetDataPresent(DataFormats.FileDrop))
+            {
+                var path = ((string[])e.Data.GetData(DataFormats.FileDrop))[0];
+                if (Directory.Exists(path))
+                {
+                    (sender as TextBox).Text = path;
+                }
+            }
+        }
+        #endregion
+
+        private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            Registry.SetValue(userRoot + "\\" + subkey, "RollSizes", RollSizes.Text);
+            Registry.SetValue(userRoot + "\\" + subkey, "SourcePath", SourcePath.Text);
+            Registry.SetValue(userRoot + "\\" + subkey, "TargetPath", TargetPath.Text);
+        }
+
+        private async Task<int> SetOutput(string p_info)
+        {
+            try
+            {
+                OutputInfo.Text = p_info;
+                await Task.Delay(5000);
+                OutputInfo.Text = "";
+            }
+            catch { }
+
+            return 0;
+        }
+
+        private bool CheckTargetDirectory()
+        {
+            IEnumerable<string> items = Directory.EnumerateFileSystemEntries(TargetPath.Text);
+            using (IEnumerator<string> en = items.GetEnumerator())
+            {
+                if (en.MoveNext())
+                {
+                    SetOutput("Target path is not empty, please empty it!");
+                    return false;
+                }
+            }
+
+            return true;
+        }
     }
 }
